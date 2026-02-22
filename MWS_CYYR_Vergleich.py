@@ -1,6 +1,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import numpy as np
 from datetime import datetime, timedelta
 import re
 import sys
@@ -9,7 +10,7 @@ import os
 # --- 1. KONFIGURATION ---
 
 # A) ZENTRALER PFAD
-ARBEITSVERZEICHNIS = '/Users/wetterheidi/Downloads/MWS'
+ARBEITSVERZEICHNIS = '/Users/wetterheidi/Documents/Dienst/GooseBay/MWS'
 
 # B) DATEINAMEN
 DATEI_NAME_A = '260221_MWS.csv'
@@ -151,22 +152,37 @@ def cvt_v(v):
 
 # NEUE FUNKTION FÜR CEILING (///042 Support)
 def get_ceil(w):
-    if pd.isna(w): return None
+    """Ermittelt das Ceiling. Gibt NaN zurück, wenn keines vorhanden ist."""
+    if pd.isna(w): return np.nan
     w_str = str(w)
     
-    # 1. Standard: OVC010, BKN020, VV005
+    # 1. Standard (CYYR): Nur OVC, BKN oder VV sind ein Ceiling!
     m1 = re.search(r'(VV|OVC|BKN)(\d{3})', w_str)
     if m1: return int(m1.group(2)) * 100
     
-    # 2. MWS Spezial: ///042 (Bedeckung unbekannt, Höhe bekannt)
-    # Sucht nach /// gefolgt von 3 Ziffern
+    # 2. MWS (Worst-Case): Wir werten /// als potentielles Ceiling
     m2 = re.search(r'///(\d{3})', w_str)
     if m2: return int(m2.group(1)) * 100
 
-    # 3. Keine Wolken (VFR)
-    if any(x in w_str for x in ['CLR','FEW','SCT','SKC']): return 6000
+    # 3. Wenn nur FEW, SCT oder CLR da sind -> KEIN Ceiling -> Linie abreißt
+    return np.nan
+
+def get_all_clouds(w):
+    """Sucht nach ALLEN Wolkenschichten in einem METAR und gibt eine Liste der Höhen in Fuß zurück."""
+    if pd.isna(w): return []
+    w_str = str(w)
+    layers = []
     
-    return None
+    # Sucht alle Vorkommen von Wolken-Kürzeln gefolgt von 3 Ziffern
+    matches = re.finditer(r'(FEW|SCT|BKN|OVC|VV|///)(\d{3})', w_str)
+    for m in matches:
+        layers.append(int(m.group(2)) * 100)
+    
+    # Wenn keine Wolken gefunden wurden, aber der Himmel als klar gemeldet wird
+    if not layers and any(x in w_str for x in ['CLR','FEW','SCT','SKC']):
+        layers.append(6000) # Unser Dummy-Wert für VFR
+        
+    return layers
 
 def check_wx(w, c): return c in str(w)
 
@@ -205,20 +221,52 @@ plt.tight_layout(); plt.savefig(out_plot1)
 
 print("- Erstelle Grafik 2...")
 fig2, ax2 = plt.subplots(2, 1, figsize=(11, 8), sharex=True, gridspec_kw={'height_ratios':[1,1]})
-ax2[0].plot(df['Timestamp'], df['MWS_Ceil'], 'g-o', label='MWS')
-ax2[0].plot(df['Timestamp'], df['CYYR_Ceil'], 'r-x', label='CYYR')
-ax2[0].set_ylabel('ft'); ax2[0].set_ylim(0, 7000); ax2[0].grid(True, alpha=0.3); ax2[0].legend()
-ax2[0].axhline(6000, c='gray', ls=':', alpha=0.5); ax2[0].set_title('Wolkenuntergrenze (MWS ///xxx = Ceiling)')
 
+# --- WOLKEN PLOT ---
+# Schattierung (wird nur dort gezeichnet, wo ein Ceiling existiert!)
+ax2[0].fill_between(df['Timestamp'], df['MWS_Ceil'], 7000, color='green', alpha=0.1)
+ax2[0].fill_between(df['Timestamp'], df['CYYR_Ceil'], 7000, color='red', alpha=0.1)
+
+# Ceiling Linie (reißt ab bei NaN)
+ax2[0].plot(df['Timestamp'], df['MWS_Ceil'], 'g-', linewidth=1.5, alpha=0.8, label='MWS Ceiling')
+ax2[0].plot(df['Timestamp'], df['CYYR_Ceil'], 'r-', linewidth=1.5, alpha=0.8, label='CYYR Ceiling')
+
+# Alle Schichten als HORIZONTALE STRICHE
+mws_cloud_x, mws_cloud_y = [], []
+cyyr_cloud_x, cyyr_cloud_y = [], []
+
+for idx, row in df.iterrows():
+    ts = row['Timestamp']
+    for hgt in get_all_clouds(row['MWS_Wx']):
+        mws_cloud_x.append(ts); mws_cloud_y.append(hgt)
+    for hgt in get_all_clouds(row['CYYR_Wx']):
+        cyyr_cloud_x.append(ts); cyyr_cloud_y.append(hgt)
+
+ax2[0].scatter(mws_cloud_x, mws_cloud_y, color='darkgreen', marker='_', s=150, lw=2, label='MWS Schichten')
+ax2[0].scatter(cyyr_cloud_x, cyyr_cloud_y, color='darkred', marker='_', s=150, lw=2, label='CYYR Schichten')
+
+ax2[0].set_ylabel('ft')
+ax2[0].set_ylim(0, 7000)
+ax2[0].grid(True, alpha=0.3)
+ax2[0].legend(loc='lower right', fontsize='small', ncol=2)
+ax2[0].set_title('Wolkenschichten (Fläche = BKN/OVC, Striche = Alle gemeldeten Schichten)')
+
+# --- WETTER MATRIX PLOT (Bleibt gleich) ---
 for i, code in enumerate(PLOT_TYPES):
     ax2[1].axhline(i, c='lightgray', alpha=0.3)
     t_m = df[df['MWS_Wx'].apply(lambda w: check_wx(w, code))]['Timestamp']
     t_c = df[df['CYYR_Wx'].apply(lambda w: check_wx(w, code))]['Timestamp']
     ax2[1].scatter(t_m, [i+0.15]*len(t_m), c='g', s=60, label='MWS' if i==0 else "")
     ax2[1].scatter(t_c, [i-0.15]*len(t_c), c='r', marker='x', s=60, label='CYYR' if i==0 else "")
-ax2[1].set_yticks(range(len(PLOT_TYPES))); ax2[1].set_yticklabels(PLOT_TYPES)
-ax2[1].grid(True, axis='x', alpha=0.3); ax2[1].legend(loc='upper right', ncol=2)
-ax2[1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M')); ax2[1].set_title('Signifikante Wettererscheinungen')
-plt.tight_layout(); plt.savefig(out_plot2)
+
+ax2[1].set_yticks(range(len(PLOT_TYPES)))
+ax2[1].set_yticklabels(PLOT_TYPES)
+ax2[1].grid(True, axis='x', alpha=0.3)
+ax2[1].legend(loc='upper right', ncol=2)
+ax2[1].xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+ax2[1].set_title('Signifikante Wettererscheinungen')
+
+plt.tight_layout()
+plt.savefig(out_plot2)
 
 print("FERTIG! Alle Dateien im Arbeitsverzeichnis gespeichert.")
