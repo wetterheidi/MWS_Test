@@ -13,8 +13,8 @@ import os
 ARBEITSVERZEICHNIS = '/Users/wetterheidi/Documents/Dienst/GooseBay/MWS'
 
 # B) DATEINAMEN
-DATEI_NAME_A = '260223_MWS.csv'
-DATEI_NAME_B = '260223_CYYR.csv'
+DATEI_NAME_A = '260227_MWS.csv'
+DATEI_NAME_B = '260227_CYYR.csv'
 
 # C) METADATEN
 CURRENT_YEAR = 2026
